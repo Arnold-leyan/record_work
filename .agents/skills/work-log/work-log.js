@@ -1,0 +1,241 @@
+// 樂衍工作日誌 自動填寫腳本
+// 用法: node work-log.js --content "今日工作內容" [--content2 "對外內容"]
+
+import { chromium } from 'playwright';
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// .env 位於專案根目錄（此檔案在 <project>/skills/work-log/）
+const ENV_PATH = path.resolve(__dirname, '..', '..', '.env');
+dotenv.config({ path: ENV_PATH });
+
+// 防止並行：同時間只允許一個 work-log 跑，避免重複報到
+const LOCK_PATH = path.join(__dirname, '.run.lock');
+function acquireLock() {
+  if (fs.existsSync(LOCK_PATH)) {
+    const age = Date.now() - fs.statSync(LOCK_PATH).mtimeMs;
+    if (age < 5 * 60 * 1000) {
+      console.error(`錯誤：另一個 work-log 正在執行中（lock 檔 ${LOCK_PATH} 存在，年齡 ${Math.round(age/1000)}s）。請等它跑完，或刪除 lock 檔。`);
+      process.exit(4);
+    }
+    fs.unlinkSync(LOCK_PATH);
+  }
+  fs.writeFileSync(LOCK_PATH, String(process.pid));
+}
+function releaseLock() {
+  try { fs.unlinkSync(LOCK_PATH); } catch {}
+}
+process.on('exit', releaseLock);
+process.on('SIGINT', () => { releaseLock(); process.exit(130); });
+process.on('SIGTERM', () => { releaseLock(); process.exit(143); });
+
+const internalIp = process.env.internal_ip;
+if (!internalIp) {
+  console.error('錯誤：.env 缺少 internal_ip');
+  process.exit(2);
+}
+const BASE_URL = `http://${internalIp}/`;
+const USER_DATA_DIR = path.join(__dirname, '.browser-profile');
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const out = { content: '', content2: null };
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--content') out.content = args[++i] ?? '';
+    else if (args[i] === '--content2') out.content2 = args[++i] ?? '';
+  }
+  return out;
+}
+
+function log(msg) {
+  console.log(`[${new Date().toLocaleTimeString('zh-TW', { hour12: false })}] ${msg}`);
+}
+
+async function main() {
+  const { content, content2 } = parseArgs();
+  if (!content || !content.trim()) {
+    console.error('錯誤：必須提供 --content "工作內容"');
+    process.exit(2);
+  }
+
+  const account = process.env.account;
+  const password = process.env.password;
+  const department = process.env.department;
+  const customerName = process.env.customer_name || '樂衍工作日誌';
+
+  if (!account || !password) {
+    console.error(`錯誤：${ENV_PATH} 缺少 account 或 password`);
+    process.exit(2);
+  }
+  if (!department) {
+    console.error(`錯誤：${ENV_PATH} 缺少 department`);
+    process.exit(2);
+  }
+
+  log(`使用帳號 ${account}，部門代碼 ${department}，目標客戶「${customerName}」`);
+
+  if (!fs.existsSync(USER_DATA_DIR)) fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+
+  const ctx = await chromium.launchPersistentContext(USER_DATA_DIR, {
+    headless: false,
+    viewport: { width: 1440, height: 900 },
+  });
+  const page = ctx.pages()[0] || (await ctx.newPage());
+  page.setDefaultTimeout(20000);
+
+  let staffName = null;
+  try {
+    log(`前往 ${BASE_URL}`);
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+
+    // 步驟 3: 登入（若已是登入狀態 persistent profile 會跳過）
+    const logoutBox = page.locator('div.logout_box').first();
+    const needsLogin = !(await logoutBox.isVisible().catch(() => false));
+    if (needsLogin) {
+      log('未登入，輸入帳密');
+      await page.locator('#sfno').waitFor({ state: 'visible' });
+      await page.locator('#sfno').fill(account);
+      await page.locator('#password').fill(password);
+      await page.locator('#btn_login').click();
+      await page.waitForLoadState('domcontentloaded');
+      await logoutBox.waitFor({ state: 'visible', timeout: 15000 });
+    } else {
+      log('已是登入狀態，跳過登入');
+    }
+
+    // 步驟 4: 抓使用者名稱
+    const logoutText = (await logoutBox.innerText()).trim();
+    staffName = logoutText.split(/\s+/)[0];
+    log(`登入身分：${staffName}`);
+
+    // 步驟 5: 點選「查詢」
+    log('點選查詢按鈕');
+    await page.locator('button.patient-profile__search-btn').click();
+
+    // 步驟 6: 輸入姓名並查詢
+    log(`搜尋客戶「${customerName}」`);
+    const nameInput = page.locator('#schbox_name');
+    await nameInput.waitFor({ state: 'visible' });
+    await nameInput.fill(customerName);
+    await page.locator('button.btn_green:has-text("查詢")').first().click();
+
+    // 步驟 7: 點第一列搜尋結果
+    const firstRow = page.locator('tr.customer-data').first();
+    await firstRow.waitFor({ state: 'visible' });
+    const cussn = await firstRow.getAttribute('data-cussn');
+    log(`找到客戶 data-cussn=${cussn}，點選第一列`);
+    await firstRow.click();
+
+    // 步驟 8: 點「確定」
+    log('點選確定');
+    await page.locator('button.btn-selected-customer').click();
+
+    // 步驟 9: 確認當日是否已有報到
+    const tableBody = page.locator('tbody#main_tb_register');
+    await tableBody.waitFor({ state: 'visible' });
+    // 等待可能的 ajax
+    await page.waitForTimeout(1500);
+    const registeredRow = tableBody.locator('tr[id^="main_tr_"]').first();
+    const alreadyRegistered = await registeredRow.isVisible().catch(() => false);
+
+    if (!alreadyRegistered) {
+      log('今天尚未報到，點擊「快速報到」');
+      await page.locator('span.bg_pink:has-text("快速報到")').first().click();
+      // 可能會跳 confirm，如果有 native dialog
+      page.once('dialog', d => d.accept().catch(() => {}));
+      await registeredRow.waitFor({ state: 'visible', timeout: 15000 });
+    } else {
+      log('今天已有報到資料，直接進行日誌寫入');
+    }
+
+    // 拿到報到的 row id（main_tr_XXXXX）
+    const rowId = await registeredRow.getAttribute('id');
+    const regId = rowId.replace('main_tr_', '');
+    log(`報到 ID = ${regId}`);
+
+    // 步驟 10: 點擊「樂衍客服」
+    log('點擊「樂衍客服」進入備註頁');
+    const [cusnotePage] = await Promise.all([
+      ctx.waitForEvent('page', { timeout: 15000 }).catch(() => null),
+      page.locator('span.bg_pink:has-text("樂衍客服")').first().click(),
+    ]);
+
+    // 樂衍客服可能在新分頁開啟，也可能直接導向當前頁
+    let target = cusnotePage;
+    if (!target) {
+      // 沒開新分頁，等同分頁導向 leyan_cusnote
+      await page.waitForURL(/leyan_cusnote/, { timeout: 15000 });
+      target = page;
+    } else {
+      await target.waitForLoadState('domcontentloaded');
+    }
+    target.setDefaultTimeout(20000);
+    log(`進入備註頁 URL=${target.url()}`);
+
+    // 步驟 11.1: cusnote 頁面的 exp_list_<id> / cnote_*_<id> 的 id 就是報到 ID
+    // 不需要靠日期+姓名搜尋（staff_tag dropdown 每筆都列全員工，會錯過濾）
+    const noteId = regId;
+    log(`對應日誌 ID=${noteId}（== 報到 ID）`);
+    const editBtn = target.locator(`#cnote_edit_${noteId}`);
+    await editBtn.waitFor({ state: 'visible' });
+    log('點擊「修改」');
+    await editBtn.click();
+
+    // 步驟 11.3-11.5: 填內容、選部門
+    const par1 = target.locator(`#cnote_memo_par_one_${noteId}`);
+    const par2 = target.locator(`#cnote_memo_par_two_${noteId}`);
+    const jobType = target.locator(`#job-type-${noteId}`);
+
+    await par1.waitFor({ state: 'visible' });
+    await par1.fill(content);
+    await par2.fill(content2 ?? content);
+    await jobType.selectOption(department);
+    log(`已填入內容，部門選 ${department}`);
+
+    // 步驟 11.6: 儲存
+    page.once('dialog', d => d.accept().catch(() => {}));
+    target.once('dialog', d => d.accept().catch(() => {}));
+    await target.locator(`#cnote_save_${noteId}`).click();
+    log('已點擊儲存');
+
+    // 等存檔完成（按鈕通常會變成「修改」表示完成）
+    await target.locator(`#cnote_edit_${noteId}`).waitFor({ state: 'visible', timeout: 15000 });
+    log('儲存成功');
+
+    // 步驟 11.7: 關閉分頁
+    if (target !== page) {
+      await target.close();
+      log('已關閉備註頁');
+    }
+
+    log('=== 完成 ===');
+    console.log(JSON.stringify({
+      ok: true,
+      staffName,
+      customer: customerName,
+      alreadyRegistered,
+      regId,
+      noteId,
+      department,
+      contentLength: content.length,
+      content2Length: (content2 ?? content).length,
+    }, null, 2));
+  } catch (err) {
+    log(`錯誤：${err.message}`);
+    try {
+      const shotPath = path.join(__dirname, `error-${Date.now()}.png`);
+      await page.screenshot({ path: shotPath, fullPage: true });
+      log(`已存錯誤截圖：${shotPath}`);
+    } catch {}
+    console.log(JSON.stringify({ ok: false, error: err.message, staffName }, null, 2));
+    process.exitCode = 1;
+  } finally {
+    await ctx.close();
+  }
+}
+
+main();

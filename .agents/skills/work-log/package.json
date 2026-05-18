@@ -1,0 +1,12 @@
+{
+  "name": "work-log",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Auto-fill 樂衍工作日誌 to internal system",
+  "main": "work-log.js",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.47.0"
+  }
+}

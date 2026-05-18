@@ -1,0 +1,24 @@
+# 環境變數與機密設定 (絕不可上傳)
+.env
+*.env
+.env.*
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Playwright & Chrome Profile (包含登入的 Session/Cookie，絕不可上傳)
+.browser-profile/
+.agents/skills/work-log/.browser-profile/
+skills/work-log/.browser-profile/
+.claude/skills/work-log/.browser-profile/
+
+# 執行時期的 Lock 檔與錯誤截圖
+*.lock
+.run.lock
+error-*.png
+
+# 系統檔案
+.DS_Store
+Thumbs.db
