@@ -1,4 +1,4 @@
-// 樂衍工作日誌 自動填寫腳本
+﻿// 樂衍工作日誌 自動填寫腳本
 // 用法: node work-log.js --content "今日工作內容" [--content2 "對外內容"]
 
 import { chromium } from 'playwright';
@@ -9,8 +9,43 @@ import fs from 'fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// .env 位於專案根目錄（此檔案在 <project>/skills/work-log/）
-const ENV_PATH = path.resolve(__dirname, '..', '..', '.env');
+function findProjectRoot(startDir) {
+  function isProjectRoot(dir) {
+    if (!dir || !fs.existsSync(dir)) return false;
+    const hasEnv = fs.existsSync(path.join(dir, '.env')) || fs.existsSync(path.join(dir, '.env.example'));
+    const hasVpnScript = fs.existsSync(path.join(dir, 'vpn-connect.ps1'));
+    const hasVpnBat = fs.readdirSync(dir).some((name) => /VPN.*\.bat$/i.test(name));
+    return hasEnv && hasVpnScript && hasVpnBat;
+  }
+
+  if (process.env.RECORD_WORK_ROOT && isProjectRoot(process.env.RECORD_WORK_ROOT)) {
+    return path.resolve(process.env.RECORD_WORK_ROOT);
+  }
+
+  const rootFile = path.join(startDir, '.record-work-root');
+  if (fs.existsSync(rootFile)) {
+    const configuredRoot = fs.readFileSync(rootFile, 'utf8').split(/\r?\n/)[0].trim();
+    if (isProjectRoot(configuredRoot)) return path.resolve(configuredRoot);
+    console.error(`錯誤：${rootFile} 指向的 record_work 專案根目錄無效：${configuredRoot}`);
+    process.exit(2);
+  }
+
+  let dir = path.resolve(startDir);
+  while (true) {
+    if (isProjectRoot(dir)) return dir;
+
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      console.error(`錯誤：無法從 ${startDir} 找到 record_work 專案根目錄。請設定 RECORD_WORK_ROOT，或在 skill 目錄建立 .record-work-root。`);
+      process.exit(2);
+    }
+    dir = parent;
+  }
+}
+
+// .env 位於 record_work 專案根目錄；skill 可放在 .agents/skills、.claude/skills 或 skills 底下。
+const PROJECT_ROOT = findProjectRoot(__dirname);
+const ENV_PATH = path.join(PROJECT_ROOT, '.env');
 dotenv.config({ path: ENV_PATH });
 
 // 防止並行：同時間只允許一個 work-log 跑，避免重複報到

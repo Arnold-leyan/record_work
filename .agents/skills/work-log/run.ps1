@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [string]$Content,
 
@@ -10,8 +10,49 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $NodeScript = Join-Path $ScriptDir "work-log.js"
-# 專案根目錄：此檔案位於 <project>/skills/work-log/run.ps1
-$RecordWork = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+
+function Resolve-RecordWorkRoot([string]$StartDir) {
+    function Test-RecordWorkRoot([string]$Path_) {
+        if (-not $Path_ -or -not (Test-Path -LiteralPath $Path_)) { return $false }
+        $resolved = (Resolve-Path -LiteralPath $Path_).Path
+        $hasEnv = (Test-Path -LiteralPath (Join-Path $resolved ".env")) -or
+                  (Test-Path -LiteralPath (Join-Path $resolved ".env.example"))
+        $hasVpnScript = Test-Path -LiteralPath (Join-Path $resolved "vpn-connect.ps1")
+        $hasVpnBat = @(Get-ChildItem -LiteralPath $resolved -Filter "*VPN*.bat" -File -ErrorAction SilentlyContinue).Count -gt 0
+        return ($hasEnv -and $hasVpnScript -and $hasVpnBat)
+    }
+
+    if ($env:RECORD_WORK_ROOT -and (Test-RecordWorkRoot $env:RECORD_WORK_ROOT)) {
+        return (Resolve-Path -LiteralPath $env:RECORD_WORK_ROOT).Path
+    }
+
+    $rootFile = Join-Path $StartDir ".record-work-root"
+    if (Test-Path -LiteralPath $rootFile) {
+        $configuredRoot = (Get-Content -LiteralPath $rootFile -Encoding UTF8 | Select-Object -First 1).Trim()
+        if (Test-RecordWorkRoot $configuredRoot) {
+            return (Resolve-Path -LiteralPath $configuredRoot).Path
+        }
+        Write-Error "Invalid project root in $rootFile`: $configuredRoot"
+        exit 2
+    }
+
+    $dir = (Resolve-Path -LiteralPath $StartDir).Path
+    while ($dir) {
+        if (Test-RecordWorkRoot $dir) {
+            return $dir
+        }
+
+        $parent = Split-Path -Parent $dir
+        if (-not $parent -or $parent -eq $dir) { break }
+        $dir = $parent
+    }
+
+    Write-Error "Cannot locate record_work project root from $StartDir. Set RECORD_WORK_ROOT or create .record-work-root in the skill directory."
+    exit 2
+}
+
+$RecordWork = Resolve-RecordWorkRoot $ScriptDir
+Write-Host "[work-log] Project root: $RecordWork"
 
 # Read credentials and IP from .env
 $envFile = Join-Path $RecordWork ".env"

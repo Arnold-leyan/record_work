@@ -28,7 +28,8 @@ description: |
 
 **在執行 `run.ps1` 之前，Claude 必須做下列檢查；缺東西就向使用者收齊再繼續：**
 
-需檢查的 5 個 key（在 `<專案根>/.env`，路徑相對 skill：`../../../.env`）：
+需檢查的 5 個 key（在 `<專案根>/.env`；專案根是包含 `vpn-connect.ps1` 與 `*VPN*.bat` 的資料夾）：
+如果 skill 被安裝在專案外（例如 `%USERPROFILE%\.codex\skills\work-log`），先讀 skill 目錄的 `.record-work-root`，或環境變數 `RECORD_WORK_ROOT`，取得專案根。
 
 ```
 account=
@@ -101,8 +102,8 @@ npx playwright install chromium
 
 ## 設定來源
 
-帳號密碼、預設部門、客戶名稱都從**專案根目錄**的 `.env` 讀取
-（路徑相對於 skill：`../../../.env`）：
+帳號密碼、預設部門、客戶名稱都從**專案根目錄**的 `.env` 讀取。
+程式會先讀環境變數 `RECORD_WORK_ROOT`，再讀 skill 目錄內的 `.record-work-root`，最後才從 skill 目錄往上尋找同時包含 `.env` 或 `.env.example`、`vpn-connect.ps1`、`*VPN*.bat` 的資料夾；不要把 `.env` 寫在 skill 目錄、`.codex` 目錄或使用者家目錄。
 
 - `account` / `password` — 內網登入帳密
 - `VPN_account` / `VPN_password` — VPN 帳密（被 `vpn-connect.ps1` 讀取）
