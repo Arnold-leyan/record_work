@@ -1,105 +1,337 @@
-# work-log 工具安裝說明
+# AI Agent Installation Guide
 
-這個工具可以幫你自動連線 VPN 並填寫「樂衍工作日誌」。它既可以作為獨立工具使用，也可以作為 AI Agent（如 Claude, Gemini, Codex）的擴充技能 (Skill)。
+This file is for AI agents that need to install, configure, verify, or use the `record_work` automation.
 
----
+The human-facing project overview is in `README.md`. Do not rely on the old encoded text from previous versions of this file.
 
-## 快速安裝（推薦）
+## Objective
 
-如果你不熟悉程式開發，請直接執行：
-1.  雙擊執行 **`0.自動安裝環境(按我).bat`**。
-2.  腳本會自動檢查 Node.js、VPN 啟動檔、openconnect、`.env` 必要欄位、npm 套件與 Playwright Chromium。
-3.  如果 `.env` 尚未建立或欄位未填完整，腳本會自動開啟 `.env`，請填入你的員編、內網密碼、VPN 帳密後存檔，再重新執行安裝。
-
----
-
-## AI Agent 整合指南 (AI Agent Integration)
-
-本工具遵循 **Progressive Disclosure** 標準，支援多種 AI Agent 偵測。
-
-### 1. 支援的 Agent 與擺放路徑
-若要在 AI 工具中使用此技能，請確保資料夾擺放在對應位置：
-
-| Agent | 建議路徑 | 備註 |
-|---|---|---|
-| **Gemini CLI** | `.agents/skills/work-log` | 本專案預設路徑 |
-| **Codex** | `%USERPROFILE%\.codex\skills\work-log` 或 `.agents/skills/work-log` | 若放在專案外，skill 目錄需有 `.record-work-root` 指向本專案 |
-| **Claude Code** | `.claude/skills/work-log` | 需將 `.agents` 改名為 `.claude` |
-
-> `run.ps1` 與 `work-log.js` 會用三種方式尋找真正的專案根目錄：先讀環境變數 `RECORD_WORK_ROOT`，再讀 skill 目錄內的 `.record-work-root`，最後才從 skill 目錄往上尋找。專案根必須同時包含 `.env` 或 `.env.example`、`vpn-connect.ps1`、以及 `*VPN*.bat`。因此 skill 放在 `.agents/skills/work-log`、`.claude/skills/work-log`、`skills/work-log`，或 Codex 的 `%USERPROFILE%\.codex\skills\work-log` 都能使用。
-
-若要把同一份 skill 同步到 Codex/Claude 的使用者層級 skill 目錄，可執行：
+Install and prepare the work-log automation so an AI agent can record a daily work log by running one command:
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SyncExternalSkills
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<skill-dir>\run.ps1" -Content "<work-log-content>"
 ```
 
-也可以指定任意外部 skill 目錄：
+The automation handles VPN, internal-system login, quick check-in, note editing, saving, and VPN cleanup.
+
+## Operating Rules For Agents
+
+1. Prefer executing commands over asking the user to do manual setup.
+2. Ask the user only for secrets or private values that are missing from `.env`.
+3. Never print full passwords, VPN secrets, or private certificate pins in the final response.
+4. Do not copy `.env` into public locations.
+5. Do not reimplement the browser workflow. Use `run.ps1`.
+6. Do not ask the user to manually use the internal website unless the automation fails after setup and VPN checks.
+
+## Required Environment
+
+The project is intended for Windows.
+
+Required tools:
+
+- PowerShell 5.1 or newer.
+- Node.js LTS.
+- `node` available in `PATH`.
+- `npm.cmd` available in `PATH`.
+
+Required project files:
+
+- `setup.ps1`
+- `vpn-connect.ps1`
+- `.env.example`
+- `.agents\skills\work-log\run.ps1`
+- `.agents\skills\work-log\work-log.js`
+- `.agents\skills\work-log\package.json`
+- `vpn-installer\bin\openconnect.exe`
+- one root-level file matching `*VPN*.bat`
+
+## Quick Install
+
+Run from the repository root:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1"
+```
+
+Expected behavior:
+
+- validates Node.js and npm;
+- creates `.env` from `.env.example` if missing;
+- validates required `.env` keys;
+- installs npm dependencies in `.agents\skills\work-log`;
+- installs Playwright Chromium;
+- prints a test command when complete.
+
+If the command exits with code `2` because `.env` is incomplete, collect the missing values from the user, update `.env`, then rerun setup.
+
+## Automated Preflight
+
+Before running setup, an agent may inspect the workspace:
+
+```powershell
+Get-ChildItem -Force
+Test-Path -LiteralPath ".\setup.ps1"
+Test-Path -LiteralPath ".\.agents\skills\work-log\run.ps1"
+Test-Path -LiteralPath ".\vpn-installer\bin\openconnect.exe"
+Get-ChildItem -LiteralPath "." -Filter "*VPN*.bat" -File
+```
+
+If these files are missing, report the missing file list and stop.
+
+## `.env` Handling
+
+The setup script creates `.env` automatically if it does not exist. Required keys are:
+
+```text
+account
+password
+VPN_account
+VPN_password
+VPN_gateway
+VPN_cert
+internal_ip
+department
+```
+
+Recommended optional key:
+
+```text
+customer_name
+```
+
+If values are missing, ask the user for a plain `key=value` block. Ask only for missing keys.
+
+Example prompt to the user:
+
+```text
+Please provide the missing private config values as key=value lines:
+
+account=
+password=
+VPN_account=
+VPN_password=
+VPN_gateway=
+VPN_cert=
+internal_ip=
+department=
+customer_name=
+```
+
+After receiving values, write or update `.env` in the repository root, then rerun:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1"
+```
+
+Security requirements:
+
+- Do not commit `.env`.
+- Do not include secret values in summaries.
+- Do not copy `.env` to external skill directories.
+
+## Install For Repo-Local Use
+
+The repo-local skill directory is:
+
+```text
+.agents\skills\work-log
+```
+
+After successful setup, run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\.agents\skills\work-log\run.ps1" -Content "setup-test"
+```
+
+A successful run prints JSON with `"ok": true`.
+
+## Install For Codex
+
+Run from the repository root:
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SkillDir "$env:USERPROFILE\.codex\skills\work-log"
 ```
 
-### 2. 給 AI Agent 的操作指令 (Important)
-**如果你是 AI Agent，請遵循以下邏輯：**
-- **檢查設定**：執行前請先檢查專案根目錄 `.env` 是否已填寫 `account`、`password`、`VPN_account`、`VPN_password`、`department`。
-- **不要把 `.env` 寫到 skill 目錄或使用者家目錄**：正確位置是 record_work 專案根目錄，也就是與 `vpn-connect.ps1`、`1.啟動VPN.bat` 同層。若 skill 在專案外，請讀 `.record-work-root` 或 `RECORD_WORK_ROOT` 取得專案根。
-- **主動詢問**：如果發現 `.env` 缺少個人帳密資訊，請**主動詢問使用者**並要求其提供，格式如下：
-  > 偵測到尚未設定個人帳密。請依下列格式一次回覆（不要加引號）：
-  > ```
-  > account=你的員編
-  > password=你的系統密碼
-  > VPN_account=通常同 account
-  > VPN_password=你的 VPN 密碼
-  > department=3  # 3=內勤 4=培訓 5=業務 6=客服 7=工程 8=行銷 9=開業顧問
-  > ```
-- **自動寫入**：收到回覆後，請直接更新 `.env` 檔案，確保後續執行順暢。
+This copies these files into the Codex skill directory:
 
----
+- `SKILL.md`
+- `package.json`
+- `package-lock.json`
+- `run.ps1`
+- `work-log.js`
 
-## 專案結構
+It also creates:
 
-```
-<專案根>/
-├── 0.自動安裝環境(按我).bat     ← 一鍵安裝
-├── 1.啟動VPN.bat               ← VPN 手動啟動
-├── .env.example                ← 設定範本
-├── .agents/                    ← AI Agent 核心目錄
-│   └── skills/
-│       └── work-log/
-│           ├── SKILL.md        ← 技能定義
-│           ├── work-log.js     ← Playwright 自動化
-│           └── run.ps1         ← 執行腳本
-└── vpn-installer/              (VPN 工具組)
+```text
+%USERPROFILE%\.codex\skills\work-log\.record-work-root
 ```
 
-## 安裝步驟（手動模式）
+That file points to the real repository root, allowing the installed skill to find `.env`, VPN scripts, and bundled VPN binaries.
 
-### Step 1：安裝套件
+Use this command after installation:
+
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.codex\skills\work-log\run.ps1" -Content "<work-log-content>"
 ```
 
-### Step 2：建立設定檔
-將 `.env.example` 複製為 `.env` 並填入資料。
+## Install For Claude Code
 
-### Step 3：手動驗證
+Run from the repository root:
+
 ```powershell
-& ".agents\skills\work-log\run.ps1" -Content "安裝測試"
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SkillDir "$env:USERPROFILE\.claude\skills\work-log"
 ```
 
----
+Use this command after installation:
 
-## 常見問題排查
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\work-log\run.ps1" -Content "<work-log-content>"
+```
 
-| 症狀 | 可能原因 | 處理 |
-|---|---|---|
-| `npm install` 失敗 | Node 版本太舊 | 升級到 ≥ 18 |
-| `.env 缺少 internal_ip` | `.env` 寫錯位置或範本未填完整 | 執行 `setup.ps1`，確認 `.env` 在專案根目錄 |
-| Codex/Claude 使用者層級 skill 找不到 `.env` | skill 在專案外，無法靠父目錄找到 record_work | 執行 `setup.ps1 -SkillDir "<skill路徑>"`，讓安裝流程建立 `.record-work-root` |
-| `VPN .bat not found` | skill 路徑層級與舊版腳本假設不一致，或 VPN bat 不在專案根目錄 | 更新到新版腳本，並確認 `1.啟動VPN.bat` 與 `vpn-connect.ps1` 在專案根目錄 |
-| `VPN did not come up` | VPN 帳密錯 | 手動跑 `1.啟動VPN.bat` 看錯誤訊息 |
-| 跳 UAC 不會自動過 | 提權請求 | 請使用者在 Windows 彈出視窗點擊「是」 |
+## Sync Common External Skill Directories
 
-## 維護者
-skill 由原作者維護。
+If the agent should prepare all common external skill locations, run:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SyncExternalSkills
+```
+
+This syncs:
+
+- `%USERPROFILE%\.codex\skills\work-log` if `%USERPROFILE%\.codex\skills` exists.
+- `%USERPROFILE%\.claude\skills\work-log` if `%USERPROFILE%\.claude\skills` exists.
+
+## Browser Install Control
+
+To skip Playwright Chromium installation:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SkipBrowserInstall
+```
+
+Use this only when Chromium is already installed for Playwright or when network access is unavailable and browser installation will be handled later.
+
+## Running The Work Log
+
+Single content for both note fields:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<skill-dir>\run.ps1" -Content "<work-log-content>"
+```
+
+Separate external and internal content:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<skill-dir>\run.ps1" -Content "<external-note>" -Content2 "<internal-note>"
+```
+
+If `-Content2` is omitted, the script uses `-Content` for both fields.
+
+## Expected Successful Output
+
+The script writes status logs and then JSON similar to:
+
+```json
+{
+  "ok": true,
+  "staffName": "...",
+  "customer": "...",
+  "alreadyRegistered": false,
+  "regId": "...",
+  "noteId": "...",
+  "department": "3",
+  "contentLength": 10,
+  "content2Length": 10
+}
+```
+
+In the final response to the user, report:
+
+- whether the run succeeded;
+- `noteId` or `regId` when available;
+- that VPN was closed if the script says it closed VPN;
+- any failure reason if the command exits nonzero.
+
+Do not include secret values.
+
+## Troubleshooting
+
+### `Node.js is not installed`
+
+Install Node.js LTS or ask the user to allow an automated Node.js installation if available in the environment. Then rerun setup.
+
+### `npm.cmd is not available`
+
+Node.js is missing or not correctly added to `PATH`. Reinstall Node.js LTS or reopen the shell after installation.
+
+### `.env` missing required values
+
+Ask the user for only the missing keys as `key=value` lines. Update `.env`, then rerun setup.
+
+### `VPN launcher not found`
+
+A root-level `*VPN*.bat` file is missing. Check whether the repository was copied incompletely.
+
+### `openconnect.exe not found`
+
+Check whether `vpn-installer\bin` exists and contains `openconnect.exe`.
+
+### `VPN did not come up within 60s`
+
+Likely causes:
+
+- incorrect VPN credentials;
+- incorrect `VPN_gateway`;
+- incorrect `VPN_cert`;
+- UAC prompt was not approved;
+- network cannot reach the VPN gateway.
+
+Ask the user to confirm secrets only if needed.
+
+### `Cannot locate record_work project root`
+
+The skill is running outside the repository and cannot locate `.env` or VPN files. Fix with one of:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File ".\setup.ps1" -SkillDir "<skill-dir>"
+```
+
+or set:
+
+```powershell
+$env:RECORD_WORK_ROOT="C:\path\to\record_work"
+```
+
+or create:
+
+```text
+<skill-dir>\.record-work-root
+```
+
+containing the real repository root path.
+
+### Playwright install failed
+
+Retry setup first. If only browser installation failed:
+
+```powershell
+Push-Location ".\.agents\skills\work-log"
+npm install
+npx playwright install chromium
+Pop-Location
+```
+
+## Agent Checklist
+
+Use this checklist when taking over a fresh clone:
+
+1. Confirm current directory is repository root.
+2. Confirm required files exist.
+3. Run `setup.ps1`.
+4. If `.env` is incomplete, ask user for missing secrets only.
+5. Rerun `setup.ps1`.
+6. Optionally sync to Codex or Claude with `-SkillDir` or `-SyncExternalSkills`.
+7. Run a `setup-test` entry only if the user allows creating a real log entry.
+8. For normal use, call `run.ps1 -Content "<work-log-content>"`.
+
