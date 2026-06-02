@@ -2,7 +2,12 @@
     [Parameter(Mandatory = $true)]
     [string]$Content,
 
-    [string]$Content2 = ""
+    [string]$Content2 = "",
+
+    # When set, keep the same VPN session open and run the read-only verifier
+    # before auto-closing VPN. This avoids opening VPN twice for the normal
+    # Hermes workflow: write -> verify.
+    [switch]$Verify
 )
 
 $ErrorActionPreference = "Stop"
@@ -10,6 +15,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
 $NodeScript = Join-Path $ScriptDir "work-log.js"
+$ReadNodeScript = Join-Path $ScriptDir "read-work-log.js"
 
 function Resolve-RecordWorkRoot([string]$StartDir) {
     function Test-RecordWorkRoot([string]$Path_) {
@@ -131,6 +137,18 @@ $nodeExit = 0
 try {
     & node @nodeArgs
     $nodeExit = $LASTEXITCODE
+
+    if ($nodeExit -eq 0 -and $Verify) {
+        Write-Host "[work-log] Running read-only verification before closing VPN..."
+        & node $ReadNodeScript
+        $verifyExit = $LASTEXITCODE
+        if ($verifyExit -ne 0) {
+            Write-Warning "[work-log] Verification failed (exit=$verifyExit)."
+            $nodeExit = $verifyExit
+        }
+    } elseif ($Verify) {
+        Write-Warning "[work-log] Skipping verification because write failed (exit=$nodeExit)."
+    }
 } finally {
     if ($WeStartedVpn) {
         Write-Host "[work-log] Closing VPN (this script started it)..."

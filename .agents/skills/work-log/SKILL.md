@@ -16,6 +16,8 @@ description: |
 
 ## 使用方式
 
+### 寫入今日工作日誌
+
 呼叫時把日誌內容當參數傳入。範例：
 
 ```
@@ -24,18 +26,37 @@ description: |
 
 如果使用者透過 Telegram 對 Claude Code 說「幫我記今天的工作日誌」之類的話，且後面附帶了實際內容，就直接呼叫這個 skill 並把內容當作 `$ARGUMENTS` 傳入。
 
+### 查看今日已寫工作日誌
+
+如果使用者說「查看今天工作日誌」、「我今天寫了什麼工作日誌」等，不要執行寫入流程；改執行唯讀查詢腳本：
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\L164\.hermes\skills\productivity\work-log\read-run.ps1"
+```
+
+`read-run.ps1` 會連 VPN、登入、進入「樂衍客服」頁讀取當日內部/外部備註與部門；它可能點「修改」讓 textarea 顯示，但不會點儲存。執行完成後回報 JSON 裡的 `internalNote`、`externalNote`、`department`。
+
+注意：查看日誌才單獨跑 `read-run.ps1`。寫入日誌時請用 `run.ps1 -Verify`，讓寫入與讀回驗證共用同一次 VPN 連線，避免 `run.ps1` 關掉 VPN 後又為 `read-run.ps1` 重開一次。多行內容不要直接塞進 bash 字串；用 Python `subprocess.run([...])` 以參數陣列呼叫 PowerShell，避免反引號/換行被 shell 誤解。
+
 ## 第一次使用：preflight（每次執行前由 Claude 檢查）
 
 **在執行 `run.ps1` 之前，Claude 必須做下列檢查；缺東西就向使用者收齊再繼續：**
 
-需檢查的 5 個 key（在 `<專案根>/.env`；專案根是包含 `vpn-connect.ps1` 與 `*VPN*.bat` 的資料夾）：
-如果 skill 被安裝在專案外（例如 `%USERPROFILE%\.codex\skills\work-log`），先讀 skill 目錄的 `.record-work-root`，或環境變數 `RECORD_WORK_ROOT`，取得專案根。
+需檢查的 key（在 `<專案根>/.env`；專案根是包含 `vpn-connect.ps1` 與 `*VPN*.bat` 的資料夾）：
+如果 skill 被安裝在專案外（例如 `%USERPROFILE%\\.codex\\skills\\work-log`），先讀 skill 目錄的 `.record-work-root`，或環境變數 `RECORD_WORK_ROOT`，取得專案根。
+
+此 Hermes/WSL 環境已安裝在：
+- 專案根：`C:\Users\L164\record_work`（WSL: `/mnt/c/Users/L164/record_work`）
+- skill 目錄：`C:\Users\L164\.hermes\skills\productivity\work-log`（WSL symlink: `/home/arnold/.hermes/skills/productivity/work-log`）
 
 ```
 account=
 password=
 VPN_account=
 VPN_password=
+VPN_gateway=
+VPN_cert=
+internal_ip=
 department=
 ```
 
@@ -55,6 +76,9 @@ AskUserQuestion 不適合自由文字（特別是密碼），別用。
 > password=你的內網密碼
 > VPN_account=通常同 account
 > VPN_password=通常同 password
+> VPN_gateway=VPN 伺服器位址
+> VPN_cert=VPN 憑證 pin，例如 pin-sha256:...
+> internal_ip=內網系統 IP，例如 192.168.x.x
 > department=3   # 3=內勤 4=培訓 5=業務 6=客服 7=工程 8=行銷 9=開業顧問
 > ```
 
@@ -80,7 +104,13 @@ npx playwright install chromium
 
 ## 執行流程
 
-執行 PowerShell 包裝腳本（與此 SKILL.md 同目錄）：
+執行 PowerShell 包裝腳本（與此 SKILL.md 同目錄）。在 Hermes/WSL 中，優先使用 Windows skill 目錄執行：
+
+```bash
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\L164\.hermes\skills\productivity\work-log\run.ps1" -Content "$ARGUMENTS" -Verify
+```
+
+PowerShell 原生範例：
 
 ```powershell
 & "$PSScriptRoot\run.ps1" -Content "$ARGUMENTS"
@@ -90,7 +120,8 @@ npx playwright install chromium
 
 1. 偵測內網 192.168.40.61:80 是否已通；不通的話會跑專案根目錄下的 `*VPN*.bat` 連 VPN
 2. 執行 `node "$PSScriptRoot\work-log.js" --content "<使用者內容>"`
-3. 如果 VPN 是這次腳本啟動的，跑完後自動 kill `openconnect.exe` 把 VPN 關掉（會跳一次 UAC）；如果 VPN 在腳本啟動前就已連著，**不會**動它，避免影響使用者其他作業
+3. 如果加上 `-Verify`（Hermes 預設使用），在關閉 VPN 前直接執行 `node "$PSScriptRoot\read-work-log.js"` 讀回今日內部/外部備註與部門，避免寫入後另跑 `read-run.ps1` 導致 VPN 重開
+4. 如果 VPN 是這次腳本啟動的，跑完寫入與可選驗證後自動 kill `openconnect.exe` 把 VPN 關掉（會跳一次 UAC）；如果 VPN 在腳本啟動前就已連著，**不會**動它，避免影響使用者其他作業
 
 如果使用者要分別輸入「對內」「對外」兩段不同內容，可以加 `-Content2`：
 
@@ -99,6 +130,23 @@ npx playwright install chromium
 ```
 
 如果沒給 `Content2`，腳本會把 `Content` 同時填到兩個欄位。
+
+### WSL/Hermes 多行內容注意事項
+
+不要在 `terminal(command=...)` 的 bash 字串中用 PowerShell backtick newline（例如 `` `n ``）組多行工作日誌；bash 會把反引號當命令替換，可能造成內容被截斷或先錯誤覆寫。若要寫入多行內容，優先用 Python `subprocess.run([...])` 傳 argv，避免 shell quoting 問題：
+
+```python
+import subprocess
+content = "1. 第一項\n2. 第二項\n3. 第三項"
+subprocess.run([
+    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", r"C:\Users\L164\.hermes\skills\productivity\work-log\run.ps1",
+    "-Content", content,
+    "-Verify",
+], check=True)
+```
+
+寫入時使用 `run.ps1 -Verify`，腳本會在同一次 VPN 連線中先寫入再讀回驗證；不要再另外執行 `read-run.ps1` 做寫入後驗證，除非 `-Verify` 失敗或使用者明確要求重新查看。因為寫入是覆蓋整個欄位，不是 append，回報時仍要核對 `-Verify` 輸出的 `internalNote` / `externalNote`。
 
 ## 設定來源
 
