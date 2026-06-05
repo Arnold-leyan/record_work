@@ -90,6 +90,75 @@ function log(msg) {
   console.log(`[${new Date().toLocaleTimeString('zh-TW', { hour12: false })}] ${msg}`);
 }
 
+function todayRocDate() {
+  const now = new Date();
+  const y = now.getFullYear() - 1911;
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}/${m}/${d}`;
+}
+
+async function findOwnNoteId(target, staffName, account) {
+  const today = todayRocDate();
+  return await target.evaluate(({ today, staffName, account }) => {
+    function text(el) { return (el.innerText || el.textContent || '').replace(/[ \t]+/g, ' ').trim(); }
+    function selectedText(sel) {
+      if (!sel) return '';
+      const opt = sel.options[sel.selectedIndex];
+      return opt ? `${sel.value}:${opt.textContent.trim()}` : (sel.value || '');
+    }
+    const rows = [...document.querySelectorAll('div.exp_list[id^="exp_list_"]')];
+    for (const row of rows) {
+      const id = row.id.replace('exp_list_', '');
+      const rowText = text(row);
+      if (!rowText.includes(`掛號日期： ${today}`) && !rowText.includes(`掛號日期：\n ${today}`)) continue;
+      const staff = selectedText(document.querySelector(`#staff_tag_${id}`));
+      const doctorMatch = rowText.match(/主治醫師：\s*([^\n]+)/);
+      const doctor = doctorMatch ? doctorMatch[1] : '';
+      const editorExists = !!document.querySelector(`#cnote_edit_${id}, #cnote_save_${id}, #cnote_memo_par_one_${id}`);
+      if ((staffName && (staff.includes(staffName) || doctor.includes(staffName))) || (account && doctor.includes(account))) {
+        return id;
+      }
+      // 有些快速報到產生的「樂衍客服」列，備註頁的 staff_tag/主治醫師文字不完整，
+      // 但 cnote_* DOM id 會沿用主畫面的掛號 id；若同頁只有這筆可編輯的今日日誌，先回傳它。
+      if (editorExists && rows.length === 1) return id;
+    }
+    return null;
+  }, { today, staffName, account });
+}
+
+async function findOwnRegisterId(page, staffName, account) {
+  return await page.evaluate(({ staffName, account }) => {
+    const rows = [...document.querySelectorAll('tbody#main_tb_register tr[id^="main_tr_"]')];
+    for (const row of rows) {
+      const id = row.id.replace('main_tr_', '');
+      const text = (row.innerText || row.textContent || '').replace(/[ \t]+/g, ' ').trim();
+      const doctor = row.getAttribute('data-doctor') || '';
+      if ((staffName && (doctor.includes(staffName) || text.includes(staffName))) || (account && (doctor.includes(account) || text.includes(account)))) {
+        return id;
+      }
+    }
+    return null;
+  }, { staffName, account });
+}
+
+async function openCusnotePage(ctx, page) {
+  const [cusnotePage] = await Promise.all([
+    ctx.waitForEvent('page', { timeout: 15000 }).catch(() => null),
+    page.locator('span.bg_pink:has-text("樂衍客服")').first().click(),
+  ]);
+  let target = cusnotePage;
+  if (!target) {
+    await page.waitForURL(/leyan_cusnote/, { timeout: 15000 });
+    target = page;
+  } else {
+    await target.waitForLoadState('domcontentloaded');
+  }
+  target.setDefaultTimeout(20000);
+  await target.waitForTimeout(1500);
+  return target;
+}
+
 async function main() {
   const { content, content2 } = parseArgs();
   if (!content || !content.trim()) {
@@ -169,52 +238,56 @@ async function main() {
     log('點選確定');
     await page.locator('button.btn-selected-customer').click();
 
-    // 步驟 9: 確認當日是否已有報到
+    // 步驟 9: 確認當日是否已有「本登入者」的報到。
+    // 注意：main_tb_register 可能列出同一天其他同仁的報到資料，不能只看第一列。
     const tableBody = page.locator('tbody#main_tb_register');
     await tableBody.waitFor({ state: 'visible' });
-    // 等待可能的 ajax
     await page.waitForTimeout(1500);
-    const registeredRow = tableBody.locator('tr[id^="main_tr_"]').first();
-    const alreadyRegistered = await registeredRow.isVisible().catch(() => false);
+    const anyRegisteredRow = tableBody.locator('tr[id^="main_tr_"]').first();
+    const hasAnyRegisteredRow = await anyRegisteredRow.isVisible().catch(() => false);
 
-    if (!alreadyRegistered) {
-      log('今天尚未報到，點擊「快速報到」');
-      await page.locator('span.bg_pink:has-text("快速報到")').first().click();
-      // 可能會跳 confirm，如果有 native dialog
+    let target = null;
+    let noteId = null;
+    let registerId = null;
+    let alreadyRegistered = false;
+
+    if (hasAnyRegisteredRow) {
+      registerId = await findOwnRegisterId(page, staffName, account);
+      log('今天已有部分報到資料，先進入備註頁確認是否有本人的日誌');
+      target = await openCusnotePage(ctx, page);
+      log(`進入備註頁 URL=${target.url()}`);
+      noteId = await findOwnNoteId(target, staffName, account);
+      if (!noteId && registerId) {
+        log(`備註頁姓名比對失敗，改用主畫面本人掛號 ID=${registerId} 作為日誌 ID`);
+        noteId = registerId;
+      }
+      alreadyRegistered = !!noteId;
+      if (!noteId) {
+        log('備註頁找不到本人的今日日誌，需回到報到頁快速報到');
+        if (target !== page) await target.close();
+        else throw new Error('已在備註頁但找不到本人的今日日誌，無法回到報到頁執行快速報到');
+      }
+    }
+
+    if (!noteId) {
+      log('今天尚未報到本人資料，點擊「快速報到」');
       page.once('dialog', d => d.accept().catch(() => {}));
-      await registeredRow.waitFor({ state: 'visible', timeout: 15000 });
-    } else {
-      log('今天已有報到資料，直接進行日誌寫入');
+      await page.locator('span.bg_pink:has-text("快速報到")').first().click();
+      await tableBody.locator('tr[id^="main_tr_"]').first().waitFor({ state: 'visible', timeout: 15000 });
+      await page.waitForTimeout(1500);
+      registerId = await findOwnRegisterId(page, staffName, account);
+      log('快速報到完成，重新進入備註頁尋找本人日誌');
+      target = await openCusnotePage(ctx, page);
+      log(`進入備註頁 URL=${target.url()}`);
+      noteId = await findOwnNoteId(target, staffName, account);
+      if (!noteId && registerId) {
+        log(`備註頁姓名比對失敗，改用快速報到掛號 ID=${registerId} 作為日誌 ID`);
+        noteId = registerId;
+      }
+      if (!noteId) throw new Error(`快速報到後仍找不到 ${staffName}/${account} 的今日日誌`);
     }
 
-    // 拿到報到的 row id（main_tr_XXXXX）
-    const rowId = await registeredRow.getAttribute('id');
-    const regId = rowId.replace('main_tr_', '');
-    log(`報到 ID = ${regId}`);
-
-    // 步驟 10: 點擊「樂衍客服」
-    log('點擊「樂衍客服」進入備註頁');
-    const [cusnotePage] = await Promise.all([
-      ctx.waitForEvent('page', { timeout: 15000 }).catch(() => null),
-      page.locator('span.bg_pink:has-text("樂衍客服")').first().click(),
-    ]);
-
-    // 樂衍客服可能在新分頁開啟，也可能直接導向當前頁
-    let target = cusnotePage;
-    if (!target) {
-      // 沒開新分頁，等同分頁導向 leyan_cusnote
-      await page.waitForURL(/leyan_cusnote/, { timeout: 15000 });
-      target = page;
-    } else {
-      await target.waitForLoadState('domcontentloaded');
-    }
-    target.setDefaultTimeout(20000);
-    log(`進入備註頁 URL=${target.url()}`);
-
-    // 步驟 11.1: cusnote 頁面的 exp_list_<id> / cnote_*_<id> 的 id 就是報到 ID
-    // 不需要靠日期+姓名搜尋（staff_tag dropdown 每筆都列全員工，會錯過濾）
-    const noteId = regId;
-    log(`對應日誌 ID=${noteId}（== 報到 ID）`);
+    log(`本人的日誌 ID=${noteId}`);
     const editBtn = target.locator(`#cnote_edit_${noteId}`);
     await editBtn.waitFor({ state: 'visible' });
     log('點擊「修改」');
@@ -253,7 +326,7 @@ async function main() {
       staffName,
       customer: customerName,
       alreadyRegistered,
-      regId,
+      regId: noteId,
       noteId,
       department,
       contentLength: content.length,

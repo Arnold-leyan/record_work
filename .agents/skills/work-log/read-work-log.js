@@ -48,6 +48,49 @@ const USER_DATA_DIR = path.join(__dirname, '.browser-profile');
 
 function log(msg) { console.log(`[${new Date().toLocaleTimeString('zh-TW', { hour12: false })}] ${msg}`); }
 
+function todayRocDate() {
+  const now = new Date();
+  return `${now.getFullYear() - 1911}/${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}`;
+}
+
+async function findOwnNoteId(target, staffName, account) {
+  const today = todayRocDate();
+  return await target.evaluate(({ today, staffName, account }) => {
+    function text(el) { return (el.innerText || el.textContent || '').replace(/[ \t]+/g, ' ').trim(); }
+    function selectedText(sel) {
+      if (!sel) return '';
+      const opt = sel.options[sel.selectedIndex];
+      return opt ? `${sel.value}:${opt.textContent.trim()}` : (sel.value || '');
+    }
+    const rows = [...document.querySelectorAll('div.exp_list[id^="exp_list_"]')];
+    for (const row of rows) {
+      const id = row.id.replace('exp_list_', '');
+      const rowText = text(row);
+      if (!rowText.includes(`掛號日期： ${today}`) && !rowText.includes(`掛號日期：\n ${today}`)) continue;
+      const staff = selectedText(document.querySelector(`#staff_tag_${id}`));
+      const doctorMatch = rowText.match(/主治醫師：\s*([^\n]+)/);
+      const doctor = doctorMatch ? doctorMatch[1] : '';
+      const editorExists = !!document.querySelector(`#cnote_edit_${id}, #cnote_save_${id}, #cnote_memo_par_one_${id}`);
+      if ((staffName && (staff.includes(staffName) || doctor.includes(staffName))) || (account && doctor.includes(account))) return id;
+      if (editorExists && rows.length === 1) return id;
+    }
+    return null;
+  }, { today, staffName, account });
+}
+
+async function findOwnRegisterId(page, staffName, account) {
+  return await page.evaluate(({ staffName, account }) => {
+    const rows = [...document.querySelectorAll('tbody#main_tb_register tr[id^="main_tr_"]')];
+    for (const row of rows) {
+      const id = row.id.replace('main_tr_', '');
+      const text = (row.innerText || row.textContent || '').replace(/[ \t]+/g, ' ').trim();
+      const doctor = row.getAttribute('data-doctor') || '';
+      if ((staffName && (doctor.includes(staffName) || text.includes(staffName))) || (account && (doctor.includes(account) || text.includes(account)))) return id;
+    }
+    return null;
+  }, { staffName, account });
+}
+
 async function textOrValue(locator) {
   if (!(await locator.count())) return '';
   const el = locator.first();
@@ -109,17 +152,16 @@ async function main() {
     const tableBody = page.locator('tbody#main_tb_register');
     await tableBody.waitFor({ state: 'visible' });
     await page.waitForTimeout(1500);
-    const registeredRow = tableBody.locator('tr[id^="main_tr_"]').first();
-    const alreadyRegistered = await registeredRow.isVisible().catch(() => false);
+    const anyRegisteredRow = tableBody.locator('tr[id^="main_tr_"]').first();
+    const alreadyRegistered = await anyRegisteredRow.isVisible().catch(() => false);
     if (!alreadyRegistered) {
       log('今天尚未報到，找不到今日工作日誌資料');
       console.log(JSON.stringify({ ok: true, staffName, customer: customerName, alreadyRegistered: false, message: '今天尚未報到，沒有工作日誌資料' }, null, 2));
       return;
     }
 
-    const rowId = await registeredRow.getAttribute('id');
-    const regId = rowId.replace('main_tr_', '');
-    log(`報到 ID = ${regId}`);
+    log('今天已有部分報到資料，進入備註頁尋找本人的日誌');
+    const registerId = await findOwnRegisterId(page, staffName, account);
 
     log('點擊「樂衍客服」進入備註頁');
     const [cusnotePage] = await Promise.all([
@@ -136,7 +178,18 @@ async function main() {
     target.setDefaultTimeout(20000);
     log(`進入備註頁 URL=${target.url()}`);
 
-    const noteId = regId;
+    let noteId = await findOwnNoteId(target, staffName, account);
+    if (!noteId && registerId) {
+      log(`備註頁姓名比對失敗，改用主畫面本人掛號 ID=${registerId} 作為日誌 ID`);
+      noteId = registerId;
+    }
+    if (!noteId) {
+      log(`備註頁找不到 ${staffName}/${account} 的今日日誌`);
+      console.log(JSON.stringify({ ok: true, staffName, customer: customerName, alreadyRegistered: false, message: '今天尚未找到本人的工作日誌資料' }, null, 2));
+      if (target !== page) await target.close();
+      return;
+    }
+    log(`本人的日誌 ID=${noteId}`);
     const editBtn = target.locator(`#cnote_edit_${noteId}`);
     await editBtn.waitFor({ state: 'visible' });
 
@@ -165,7 +218,7 @@ async function main() {
       staffName,
       customer: customerName,
       alreadyRegistered: true,
-      regId,
+      regId: noteId,
       noteId,
       department,
       internalNote: contentInternal,

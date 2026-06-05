@@ -34,7 +34,7 @@ description: |
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Users\L164\.hermes\skills\productivity\work-log\read-run.ps1"
 ```
 
-`read-run.ps1` 會連 VPN、登入、進入「樂衍客服」頁讀取當日內部/外部備註與部門；它可能點「修改」讓 textarea 顯示，但不會點儲存。執行完成後回報 JSON 裡的 `internalNote`、`externalNote`、`department`。
+`read-run.ps1` 會連 VPN、登入、進入「樂衍客服」頁讀取當日內部/外部備註與部門；它會在備註頁用登入姓名/帳號（例如 `邱珞` / `L181`）尋找當日屬於本人的日誌，而不是讀第一筆同日資料。它可能點「修改」讓 textarea 顯示，但不會點儲存。執行完成後回報 JSON 裡的 `internalNote`、`externalNote`、`department`；如果同日只有其他同仁資料，應回報尚未找到本人的工作日誌。
 
 注意：查看日誌才單獨跑 `read-run.ps1`。寫入日誌時請用 `run.ps1 -Verify`，讓寫入與讀回驗證共用同一次 VPN 連線，避免 `run.ps1` 關掉 VPN 後又為 `read-run.ps1` 重開一次。多行內容不要直接塞進 bash 字串；用 Python `subprocess.run([...])` 以參數陣列呼叫 PowerShell，避免反引號/換行被 shell 誤解。
 
@@ -120,8 +120,9 @@ PowerShell 原生範例：
 
 1. 偵測內網 192.168.40.61:80 是否已通；不通的話會跑專案根目錄下的 `*VPN*.bat` 連 VPN
 2. 執行 `node "$PSScriptRoot\work-log.js" --content "<使用者內容>"`
-3. 如果加上 `-Verify`（Hermes 預設使用），在關閉 VPN 前直接執行 `node "$PSScriptRoot\read-work-log.js"` 讀回今日內部/外部備註與部門，避免寫入後另跑 `read-run.ps1` 導致 VPN 重開
-4. 如果 VPN 是這次腳本啟動的，跑完寫入與可選驗證後自動 kill `openconnect.exe` 把 VPN 關掉（會跳一次 UAC）；如果 VPN 在腳本啟動前就已連著，**不會**動它，避免影響使用者其他作業
+3. 腳本會先登入並搜尋客戶「樂衍工作日誌」，再進入「樂衍客服」備註頁用登入姓名/帳號尋找當日屬於本人的日誌；如果同日已有其他同仁資料但沒有本人的資料，必須回到報到頁點「快速報到」，再重新進入備註頁寫入本人的新日誌。不要把第一筆同日資料或其他同仁資料當成本人的報到。注意：快速報到後備註頁有時不顯示登入姓名/帳號，但 `cnote_*` DOM id 會沿用主畫面的 `main_tr_<掛號ID>`；此時可用主畫面 `data-doctor` 比對到的本人掛號 ID 作為日誌 ID。
+4. 如果加上 `-Verify`（Hermes 預設使用），在關閉 VPN 前直接執行 `node "$PSScriptRoot\read-work-log.js"` 讀回今日內部/外部備註與部門，避免寫入後另跑 `read-run.ps1` 導致 VPN 重開
+5. 如果 VPN 是這次腳本啟動的，跑完寫入與可選驗證後自動 kill `openconnect.exe` 把 VPN 關掉（會跳一次 UAC）；如果 VPN 在腳本啟動前就已連著，**不會**動它，避免影響使用者其他作業
 
 如果使用者要分別輸入「對內」「對外」兩段不同內容，可以加 `-Content2`：
 
